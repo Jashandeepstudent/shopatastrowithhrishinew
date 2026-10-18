@@ -1,0 +1,129 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Admin = a Firebase Auth account with the custom claim `admin: true`.
+    // Claims can only be set with the Admin SDK (see scripts/create-admin.mjs), never by a user.
+    function isAdmin() {
+      return request.auth != null && request.auth.token.get('admin', false) == true;
+    }
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Orders and payments are written ONLY by the Netlify Functions (Admin SDK bypasses these rules).
+    // Browsers can never create an order, change its status or mark it paid.
+    match /orders/{orderId} {
+      allow read: if signedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+      allow create, update, delete: if false;
+
+      match /status_history/{historyId} {
+        allow read: if signedIn() && (get(/databases/$(database)/documents/orders/$(orderId)).data.user_id == request.auth.uid || isAdmin());
+        allow write: if false;
+      }
+
+      match /admin_notes/{noteId} {
+        allow read: if isAdmin();
+        allow write: if false;
+      }
+    }
+
+    // Webhook / payment event log: server only; admins may read.
+    match /payment_events/{eventId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Settings and coupons are read by the server only; admins may manage coupons from the panel.
+    // They must never hold secrets.
+    match /settings/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /coupons/{couponId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Public catalogue content, admin managed
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /testimonials/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /highlights/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /offers/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Reviews: public read, signed-in create, owner/admin edit
+    match /product_reviews/{reviewId} {
+      allow read: if true;
+      allow create: if signedIn();
+      allow update, delete: if isAdmin() || (signedIn() && resource.data.user_id == request.auth.uid);
+    }
+
+    // Customer-owned data
+    match /profiles/{userId} {
+      allow read, write: if signedIn() && (request.auth.uid == userId || isAdmin());
+    }
+
+    match /user_roles/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow write: if false;
+    }
+
+    match /addresses/{addressId} {
+      allow read: if signedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if signedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+    }
+
+    match /wishlist_items/{itemId} {
+      allow read: if signedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+      allow delete: if signedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+    }
+
+    match /login_history/{historyId} {
+      allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
+      allow read: if isAdmin();
+    }
+
+    // Public forms: anyone can submit, only admins can read or manage
+    match /visitor_leads/{leadId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /appointments/{appId} {
+      allow create: if true;
+      allow read: if isAdmin() || (signedIn() && resource.data.user_id == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /contact_messages/{msgId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /analytics_events/{eventId} {
+      allow create: if request.resource.data.event_name is string &&
+                       request.resource.data.event_name.size() > 0 &&
+                       request.resource.data.event_name.size() < 64 &&
+                       request.resource.data.timestamp is string;
+      allow read, update, delete: if isAdmin();
+    }
+  }
+}
