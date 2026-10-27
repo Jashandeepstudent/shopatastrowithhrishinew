@@ -13,15 +13,19 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { catalogById } from "@/lib/catalog";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { trackViewItem, trackAddToCart } from "@/lib/analytics";
 
-const REVIEWS = [
-  { name: "Priya Shah", city: "Surat", rating: 5, text: "Genuine product with premium packaging. Felt calmer within a few days of wearing it." },
-  { name: "Mehul Patel", city: "Ahmedabad", rating: 5, text: "Hrishi ji guided me properly before buying. Delivery was quick and the quality is excellent." },
-  { name: "Harsh Mehta", city: "Vadodara", rating: 4, text: "Beautiful finish and clearly energised. Highly recommended for anyone starting out." },
-];
+type Review = {
+  id: string;
+  author_name: string;
+  rating: number;
+  comment: string;
+  created_at: string;
+  images?: string[] | null;
+  published?: boolean;
+};
 
 const Product = () => {
   const { id } = useParams();
@@ -33,6 +37,8 @@ const Product = () => {
   const [active, setActive] = useState(0);
   const [qty, setQty] = useState(1);
   const [showVideo, setShowVideo] = useState(false);
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -44,7 +50,13 @@ const Product = () => {
         const docSnap = await getDoc(doc(db, "products", id));
         if (!alive) return;
         if (docSnap.exists()) {
-          setProduct({ id: docSnap.id, ...docSnap.data() } as unknown as DBProduct);
+          // Overlay the Firestore doc onto the catalog entry (when one exists)
+          // instead of replacing it outright — an admin edit only sends the
+          // fields on the edit form, so replacing would silently blank out
+          // catalog-only fields (badge, review_count, featured, sort_order…)
+          // for any product that started out built into CATALOG.
+          const data = docSnap.data();
+          setProduct({ ...(fallback ?? {}), id: docSnap.id, ...data } as unknown as DBProduct);
         } else {
           setProduct(fallback ?? null);
         }
@@ -53,6 +65,33 @@ const Product = () => {
         if (alive) setProduct(fallback ?? null);
       } finally {
         if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!id) return;
+      setReviewsLoading(true);
+      try {
+        const q = query(collection(db, "product_reviews"), where("product_id", "==", id));
+        const snap = await getDocs(q);
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Review[];
+        // Admin-written reviews (ReviewsManager) can be hidden via `published:
+        // false`; customer-submitted reviews have no `published` field at all
+        // and must still show — only an explicit `false` hides one.
+        const visible = list.filter((r) => r.published !== false);
+        visible.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+        if (alive) setReviews(visible);
+      } catch (err) {
+        console.warn("Product reviews load warning:", err);
+        if (alive) setReviews([]);
+      } finally {
+        if (alive) setReviewsLoading(false);
       }
     })();
     return () => {
@@ -431,18 +470,43 @@ const Product = () => {
             </div>
           )}
 
-          <div className="grid md:grid-cols-3 gap-6">
-            {REVIEWS.map((r) => (
-              <div key={r.name} className="lux-card rounded-2xl p-6">
-                <div className="flex gap-1 text-gold mb-3">
-                  {[...Array(r.rating)].map((_, i) => <Star key={i} className="h-4 w-4 fill-gold" />)}
+          {reviewsLoading ? (
+            <div className="grid md:grid-cols-3 gap-6">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="lux-card rounded-2xl p-6 h-36 bg-secondary animate-pulse" />
+              ))}
+            </div>
+          ) : reviews.length > 0 ? (
+            <div className="grid md:grid-cols-3 gap-6">
+              {reviews.map((r) => (
+                <div key={r.id} className="lux-card rounded-2xl p-6">
+                  <div className="flex gap-1 text-gold mb-3">
+                    {[...Array(r.rating)].map((_, i) => <Star key={i} className="h-4 w-4 fill-gold" />)}
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-4">"{r.comment}"</p>
+                  {Array.isArray(r.images) && r.images.length > 0 && (
+                    <div className="flex gap-2 mb-4">
+                      {r.images.map((url, i) => (
+                        <img
+                          key={url}
+                          src={url}
+                          alt={`${r.author_name} review photo ${i + 1}`}
+                          loading="lazy"
+                          className="h-16 w-16 rounded-lg object-cover border border-border"
+                        />
+                      ))}
+                    </div>
+                  )}
+                  <div className="text-sm font-medium">{r.author_name || "Anonymous"}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {r.created_at ? new Date(r.created_at).toLocaleDateString("en-IN") : ""}
+                  </div>
                 </div>
-                <p className="text-sm text-muted-foreground leading-relaxed mb-4">"{r.text}"</p>
-                <div className="text-sm font-medium">{r.name}</div>
-                <div className="text-xs text-muted-foreground">{r.city}</div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No reviews yet — be the first to share your experience.</p>
+          )}
         </section>
       </div>
     </PageLayout>
