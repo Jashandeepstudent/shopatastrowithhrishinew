@@ -16,6 +16,7 @@ import PaymentSettingsTab from "@/components/admin/PaymentSettingsTab";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
 import { fetchAdminStats, fetchAdminCollection, createAdminDoc, updateAdminDoc, deleteAdminDoc, uploadAdminMedia } from "@/lib/adminApi";
+import { uploadAdminVideo } from "@/lib/videoUpload";
 import {
   collection,
   getDocs,
@@ -173,9 +174,9 @@ const Admin = () => {
         <StatsOverview />
         <Tabs defaultValue="analytics" className="w-full mt-6">
           <TabsList className="glass-gold flex-wrap h-auto justify-start">
-            {["analytics", "appointments", "shop", "orders", "payments", "reviews", "highlights", "testimonials", "offers", "messages", "customers"].map((t) => (
+            {["analytics", "appointments", "shop", "orders", "payments", "reviews", "highlights", "testimonials", "offers", "promotions", "messages", "customers"].map((t) => (
               <TabsTrigger key={t} value={t} className="capitalize data-[state=active]:bg-gradient-gold data-[state=active]:text-primary-foreground">
-                {t === "analytics" ? "Analytics & Tracking" : t === "payments" ? "Payment Gateway" : t}
+                {t === "analytics" ? "Analytics & Tracking" : t === "payments" ? "Payment Gateway" : t === "offers" ? "Coupons" : t === "promotions" ? "Offers / Promotions" : t}
               </TabsTrigger>
             ))}
           </TabsList>
@@ -188,6 +189,7 @@ const Admin = () => {
           <TabsContent value="highlights"><HighlightsManager /></TabsContent>
           <TabsContent value="testimonials"><TestimonialsTab /></TabsContent>
           <TabsContent value="offers"><OffersTab /></TabsContent>
+          <TabsContent value="promotions"><PromoOffersTab /></TabsContent>
           <TabsContent value="messages"><MessagesTab /></TabsContent>
           <TabsContent value="customers"><CustomersTab /></TabsContent>
         </Tabs>
@@ -295,17 +297,16 @@ const ProductsTab = () => {
   const [videoClientName, setVideoClientName] = useState("");
   const [videoTitle, setVideoTitle] = useState("");
   const [videoUploading, setVideoUploading] = useState(false);
+  const [videoProgress, setVideoProgress] = useState<{ uploadedChunks: number; totalChunks: number } | null>(null);
   const [editing, setEditing] = useState<any | null>(null);
 
   const handleVideoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
-    toast.error("Video upload is not available (images only). Please paste a video link instead, for example a YouTube or hosted .mp4 URL.");
-    return;
 
-    if (file.size > 50 * 1024 * 1024) {
-      toast.error("Video file size must be under 50MB");
+    if (file.size > 60 * 1024 * 1024) {
+      toast.error("Video file size must be under 60MB");
       return;
     }
 
@@ -335,7 +336,8 @@ const ProductsTab = () => {
 
       setVideoDuration(selectedDur);
       toast.info(`Video validated (${duration}s duration). Uploading from gallery...`);
-      const url = await uploadAdminMedia(file, "product-videos");
+      setVideoProgress({ uploadedChunks: 0, totalChunks: 1 });
+      const url = await uploadAdminVideo(file, "product-videos", setVideoProgress);
       if (url) {
         setVideoUrl(url);
         toast.success(`Video uploaded successfully (${selectedDur}s duration)!`);
@@ -344,6 +346,7 @@ const ProductsTab = () => {
       toast.error(err.message || "Failed to process gallery video");
     } finally {
       setVideoUploading(false);
+      setVideoProgress(null);
     }
   };
 
@@ -526,10 +529,14 @@ const ProductsTab = () => {
             <div className="flex flex-wrap items-center gap-3">
               <label className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-gradient-gold text-primary-foreground font-semibold cursor-pointer text-xs shadow-md hover:opacity-95 transition-all">
                 <Video className="h-4 w-4" />
-                {videoUploading ? "Validating & Uploading..." : "Choose Video from Gallery / Device"}
+                {videoUploading
+                  ? videoProgress
+                    ? `Uploading... ${videoProgress.uploadedChunks}/${videoProgress.totalChunks}`
+                    : "Validating..."
+                  : "Choose Video from Gallery / Device"}
                 <input
                   type="file"
-                  accept="video/*,video/mp4,video/webm,video/quicktime,video/m4v,video/3gp,video/mkv"
+                  accept="video/mp4,video/webm,video/quicktime,video/x-m4v"
                   className="hidden"
                   disabled={videoUploading}
                   onChange={handleVideoFile}
@@ -708,33 +715,88 @@ const TestimonialsTab = () => {
 
 /* ─── offers (coupons) ─── */
 
+const emptyCouponForm = { code: "", description: "", discount_type: "percent", discount_value: "", min_order: "0", max_discount: "", usage_limit: "", expires_at: "" };
+
+const couponToForm = (c: any) => ({
+  code: c.code || "",
+  description: c.description || "",
+  discount_type: c.discount_type || "percent",
+  discount_value: String(c.discount_value ?? ""),
+  min_order: String(c.min_order ?? "0"),
+  max_discount: c.max_discount != null ? String(c.max_discount) : "",
+  usage_limit: c.usage_limit != null ? String(c.usage_limit) : "",
+  expires_at: c.expires_at ? c.expires_at.slice(0, 10) : "",
+});
+
 const OffersTab = () => {
   const [list, reload] = useList("coupons");
-  const [f, setF] = useState({ code: "", description: "", discount_type: "percent", discount_value: "", min_order: "0", max_discount: "", usage_limit: "", expires_at: "" });
+  const [f, setF] = useState({ ...emptyCouponForm });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const buildPayload = () => ({
+    code: f.code.trim().toUpperCase(),
+    description: f.description.trim() || null,
+    discount_type: f.discount_type,
+    discount_value: parseFloat(f.discount_value),
+    min_order: parseFloat(f.min_order) || 0,
+    max_discount: f.max_discount ? parseFloat(f.max_discount) : null,
+    usage_limit: f.usage_limit ? parseInt(f.usage_limit) : null,
+    expires_at: f.expires_at ? new Date(f.expires_at).toISOString() : null,
+  });
+
+  const reset = () => {
+    setF({ ...emptyCouponForm });
+    setEditingId(null);
+  };
 
   const create = async () => {
     if (!f.code.trim()) return toast.error("Coupon code required");
     if (!f.discount_value) return toast.error("Discount value required");
-    const payload: any = {
-      code: f.code.trim().toUpperCase(),
-      description: f.description.trim() || null,
-      discount_type: f.discount_type,
-      discount_value: parseFloat(f.discount_value),
-      min_order: parseFloat(f.min_order) || 0,
-      max_discount: f.max_discount ? parseFloat(f.max_discount) : null,
-      usage_limit: f.usage_limit ? parseInt(f.usage_limit) : null,
-      expires_at: f.expires_at ? new Date(f.expires_at).toISOString() : null,
-      active: true,
-      used_count: 0,
-      created_at: new Date().toISOString(),
-    };
+    setSaving(true);
     try {
-      await createAdminDoc("coupons", payload);
-      toast.success("Offer created"); setF({ code: "", description: "", discount_type: "percent", discount_value: "", min_order: "0", max_discount: "", usage_limit: "", expires_at: "" }); reload();
+      await createAdminDoc("coupons", {
+        ...buildPayload(),
+        active: true,
+        used_count: 0,
+        created_at: new Date().toISOString(),
+      });
+      toast.success("Offer created");
+      reset();
+      reload();
     } catch (err: any) {
       toast.error(err.message || "Failed to create offer");
+    } finally {
+      setSaving(false);
     }
   };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    if (!f.code.trim()) return toast.error("Coupon code required");
+    if (!f.discount_value) return toast.error("Discount value required");
+    setSaving(true);
+    try {
+      await updateAdminDoc("coupons", editingId, {
+        ...buildPayload(),
+        updated_at: new Date().toISOString(),
+      });
+      toast.success("Offer updated");
+      reset();
+      reload();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update offer");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const startEdit = (c: any) => {
+    setEditingId(c.id);
+    setF(couponToForm(c));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const toggle = async (id: string, active: boolean) => {
     try {
       await updateAdminDoc("coupons", id, { active: !active, updated_at: new Date().toISOString() });
@@ -746,6 +808,7 @@ const OffersTab = () => {
   const del = async (id: string) => {
     try {
       await deleteAdminDoc("coupons", id);
+      if (editingId === id) reset();
       reload();
     } catch (err: any) {
       toast.error(err.message || "Failed to delete offer");
@@ -755,7 +818,7 @@ const OffersTab = () => {
   return (
     <>
       <Card>
-        <h3 className="font-display text-gold mb-3">Add Offer / Coupon</h3>
+        <h3 className="font-display text-gold mb-3">{editingId ? "Edit Offer / Coupon" : "Add Offer / Coupon"}</h3>
         <div className="grid sm:grid-cols-2 gap-3">
           <Input placeholder="Coupon Code (e.g. DIWALI20)" value={f.code} onChange={(e) => setF({ ...f, code: e.target.value.toUpperCase() })} className={inputCls} />
           <select value={f.discount_type} onChange={(e) => setF({ ...f, discount_type: e.target.value })} className={`h-10 rounded-md ${inputCls} px-3`}>
@@ -769,7 +832,17 @@ const OffersTab = () => {
           <Input placeholder="Expiry Date (optional)" type="date" value={f.expires_at} onChange={(e) => setF({ ...f, expires_at: e.target.value })} className={inputCls} />
           <Input placeholder="Description (optional)" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} className={inputCls} />
         </div>
-        <Button onClick={create} className="mt-3 bg-gradient-gold text-primary-foreground"><Plus className="h-4 w-4 mr-1" /> Create Offer</Button>
+        <div className="flex gap-2 mt-3">
+          <Button disabled={saving} onClick={editingId ? saveEdit : create} className="bg-gradient-gold text-primary-foreground">
+            {editingId ? <Pencil className="h-4 w-4 mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
+            {saving ? "Saving..." : editingId ? "Save Changes" : "Create Offer"}
+          </Button>
+          {editingId && (
+            <Button variant="outline" onClick={reset} className="border-gold/30">
+              <X className="h-4 w-4 mr-1" /> Cancel
+            </Button>
+          )}
+        </div>
       </Card>
       <div className="space-y-3 mt-6">
         {list.length === 0 && <div className="text-center text-cosmic-silver/60 py-8">No offers yet</div>}
@@ -790,8 +863,171 @@ const OffersTab = () => {
               {c.description && <div className="text-xs text-cosmic-silver/60 mt-1">{c.description}</div>}
             </div>
             <div className="flex items-center gap-2">
+              <button onClick={() => startEdit(c)} className="text-gold" title="Edit"><Pencil className="h-4 w-4" /></button>
               <button onClick={() => toggle(c.id, c.active)} className="text-xs px-2 py-1 rounded border border-gold/30 hover:bg-gold/10">{c.active ? "Deactivate" : "Activate"}</button>
               <button onClick={() => del(c.id)} className="text-destructive"><Trash2 className="h-4 w-4" /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+};
+
+/* ─── promotions (public "offers" collection — banners shown on the live site) ─── */
+
+const emptyPromoForm = { title: "", description: "", discount_text: "", image_url: "", starts_at: "", ends_at: "" };
+
+const promoToForm = (o: any) => ({
+  title: o.title || "",
+  description: o.description || "",
+  discount_text: o.discount_text || "",
+  image_url: o.image_url || "",
+  starts_at: o.starts_at ? o.starts_at.slice(0, 10) : "",
+  ends_at: o.ends_at ? o.ends_at.slice(0, 10) : "",
+});
+
+const PromoOffersTab = () => {
+  const [list, reload] = useList("offers");
+  const [f, setF] = useState({ ...emptyPromoForm });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const buildPayload = () => ({
+    title: f.title.trim(),
+    description: f.description.trim() || null,
+    discount_text: f.discount_text.trim() || null,
+    image_url: f.image_url || null,
+    starts_at: f.starts_at ? new Date(f.starts_at).toISOString() : null,
+    ends_at: f.ends_at ? new Date(f.ends_at).toISOString() : null,
+  });
+
+  const reset = () => {
+    setF({ ...emptyPromoForm });
+    setEditingId(null);
+  };
+
+  const create = async () => {
+    if (!f.title.trim()) return toast.error("Offer title required");
+    setSaving(true);
+    try {
+      await createAdminDoc("offers", {
+        ...buildPayload(),
+        active: true,
+        created_at: new Date().toISOString(),
+      });
+      toast.success("Offer published");
+      reset();
+      reload();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create offer");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    if (!f.title.trim()) return toast.error("Offer title required");
+    setSaving(true);
+    try {
+      await updateAdminDoc("offers", editingId, {
+        ...buildPayload(),
+        updated_at: new Date().toISOString(),
+      });
+      toast.success("Offer updated");
+      reset();
+      reload();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update offer");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const startEdit = (o: any) => {
+    setEditingId(o.id);
+    setF(promoToForm(o));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const toggle = async (id: string, active: boolean) => {
+    try {
+      await updateAdminDoc("offers", id, { active: !active, updated_at: new Date().toISOString() });
+      reload();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to toggle offer");
+    }
+  };
+
+  const del = async (id: string) => {
+    try {
+      await deleteAdminDoc("offers", id);
+      if (editingId === id) reset();
+      toast.success("Offer deleted");
+      reload();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete offer");
+    }
+  };
+
+  return (
+    <>
+      <Card>
+        <h3 className="font-display text-gold mb-1">{editingId ? "Edit Offer" : "Add Offer"}</h3>
+        <p className="text-sm text-cosmic-silver/70 mb-3">
+          Shown as a promo banner on the live site — for a festival sale, limited-time discount or announcement. For
+          a code customers enter at checkout, use the coupon manager above instead.
+        </p>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <Input placeholder="Title (e.g. Diwali Dhamaka Sale)" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} className={inputCls} />
+          <Input placeholder="Discount badge (e.g. 20% OFF, Flat ₹100 off)" value={f.discount_text} onChange={(e) => setF({ ...f, discount_text: e.target.value })} className={inputCls} />
+          <Input placeholder="Starts (optional)" type="date" value={f.starts_at} onChange={(e) => setF({ ...f, starts_at: e.target.value })} className={inputCls} />
+          <Input placeholder="Ends (optional)" type="date" value={f.ends_at} onChange={(e) => setF({ ...f, ends_at: e.target.value })} className={inputCls} />
+        </div>
+        <Textarea placeholder="Description (optional)" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} className={`mt-3 ${inputCls}`} />
+        <div className="mt-3">
+          <label className="text-xs uppercase tracking-widest text-gold/70 mb-2 block">Banner Image (optional)</label>
+          <div className="flex items-center gap-4">
+            <ImageUpload bucket="offers" label="Upload Banner Image" onUploaded={(url) => setF((p) => ({ ...p, image_url: url }))} />
+            {f.image_url && <img src={f.image_url} alt="offer banner preview" className="h-16 w-28 rounded-lg object-cover border border-gold/20" />}
+          </div>
+        </div>
+        <div className="flex gap-2 mt-3">
+          <Button disabled={saving} onClick={editingId ? saveEdit : create} className="bg-gradient-gold text-primary-foreground">
+            {editingId ? <Pencil className="h-4 w-4 mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
+            {saving ? "Saving..." : editingId ? "Save Changes" : "Publish Offer"}
+          </Button>
+          {editingId && (
+            <Button variant="outline" onClick={reset} className="border-gold/30">
+              <X className="h-4 w-4 mr-1" /> Cancel
+            </Button>
+          )}
+        </div>
+      </Card>
+      <div className="space-y-3 mt-6">
+        {list.length === 0 && <div className="text-center text-cosmic-silver/60 py-8">No offers yet</div>}
+        {list.map((o: any) => (
+          <div key={o.id} className="glass-gold rounded-2xl p-4 flex justify-between items-center gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              {o.image_url && <img src={o.image_url} alt={o.title} className="h-14 w-20 rounded-lg object-cover border border-gold/20 shrink-0" />}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-display text-gold text-lg truncate">{o.title}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${o.active ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>{o.active ? "Active" : "Inactive"}</span>
+                  {o.discount_text && <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold border border-gold/30">{o.discount_text}</span>}
+                </div>
+                <div className="text-xs text-cosmic-silver/70 mt-1">
+                  {o.starts_at && `From ${new Date(o.starts_at).toLocaleDateString()}`}
+                  {o.ends_at && ` • Until ${new Date(o.ends_at).toLocaleDateString()}`}
+                </div>
+                {o.description && <div className="text-xs text-cosmic-silver/60 mt-1 line-clamp-2">{o.description}</div>}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button onClick={() => startEdit(o)} className="text-gold" title="Edit"><Pencil className="h-4 w-4" /></button>
+              <button onClick={() => toggle(o.id, o.active)} className="text-xs px-2 py-1 rounded border border-gold/30 hover:bg-gold/10">{o.active ? "Deactivate" : "Activate"}</button>
+              <button onClick={() => del(o.id)} className="text-destructive" title="Delete"><Trash2 className="h-4 w-4" /></button>
             </div>
           </div>
         ))}
