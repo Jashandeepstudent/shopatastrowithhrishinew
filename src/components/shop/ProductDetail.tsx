@@ -20,6 +20,8 @@ type Review = {
   comment: string;
   created_at: string;
   user_id: string;
+  images?: string[] | null;
+  published?: boolean;
 };
 
 const Stars = ({ value, className }: { value: number; className?: string }) => (
@@ -68,8 +70,13 @@ const ProductDetail = ({
       const snap = await getDocs(q);
       const list = snap.docs
         .map((d) => ({ id: d.id, ...d.data() })) as Review[];
-      list.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
-      setReviews(list);
+      // Admin-written reviews (from ReviewsManager) can be hidden via `published:
+      // false`; customer-submitted reviews (from submitReview below) have no
+      // `published` field at all and must still show up, so only an explicit
+      // `false` hides one — never filter out a review that simply lacks the field.
+      const visible = list.filter((r) => r.published !== false);
+      visible.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+      setReviews(visible);
     } catch (e) {
       console.warn("Product reviews load note:", e);
     }
@@ -401,6 +408,19 @@ const ProductDetail = ({
                 </div>
                 <Stars value={r.rating} className="my-1" />
                 <p className="text-sm text-cosmic-silver/75">{r.comment}</p>
+                {Array.isArray(r.images) && r.images.length > 0 && (
+                  <div className="flex gap-2 mt-2">
+                    {r.images.map((url, i) => (
+                      <img
+                        key={url}
+                        src={url}
+                        alt={`${r.author_name} review photo ${i + 1}`}
+                        loading="lazy"
+                        className="h-14 w-14 rounded-lg object-cover border border-gold/20"
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
