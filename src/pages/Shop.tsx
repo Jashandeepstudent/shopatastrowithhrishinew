@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { Search, ShoppingBag, Star, Check, Sparkles, Play, Video } from "lucide-react";
 import PageLayout from "@/components/PageLayout";
 import SEO from "@/components/SEO";
+import OffersBanner from "@/components/OffersBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useProducts } from "@/hooks/useProducts";
@@ -286,6 +287,7 @@ const Shop = () => {
           },
         }}
       />
+      <OffersBanner />
       <div className="container">
         {/* Featured New Launch */}
         {trishield && (
