@@ -5,6 +5,7 @@ import PageLayout from "@/components/PageLayout";
 import SEO from "@/components/SEO";
 import SplashLoader from "@/components/SplashLoader";
 import HeroBraceletStrip from "@/components/HeroBraceletStrip";
+import OffersBanner from "@/components/OffersBanner";
 import { Button } from "@/components/ui/button";
 import { useProducts } from "@/hooks/useProducts";
 import { resolveImages } from "@/lib/productImages";
@@ -63,6 +64,7 @@ const Index = () => {
         ]}
       />
       <PageLayout>
+        <OffersBanner />
         {/* Hero */}
         <section className="container pt-6 pb-20">
           <div className="grid lg:grid-cols-2 gap-12 items-center">
